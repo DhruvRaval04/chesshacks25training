@@ -5,7 +5,7 @@ Gym-compatible chess environment built on top of python-chess.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional
 
 import chess
 import numpy as np
@@ -22,8 +22,12 @@ from .move_encoding import (
     random_legal_move,
 )
 from . import opponents
+from .position_eval import evaluation_delta_reward
 
-RewardFn = Callable[[chess.Board, Optional[str]], float]
+RewardFn = Callable[
+    [chess.Board, chess.Board, chess.Color, Optional[str]],
+    float,
+]
 OpponentPolicy = Callable[[chess.Board], chess.Move]
 
 
@@ -33,6 +37,7 @@ class RewardConfig:
     loss: float = -1.0
     draw: float = 0.0
     illegal_move: float = -1.0
+    reward_fn: Optional[RewardFn] = evaluation_delta_reward
 
 
 class ChessEnv(gym.Env):
@@ -43,7 +48,7 @@ class ChessEnv(gym.Env):
         agent_color: chess.Color = chess.WHITE,
         opponent_policy: Optional[OpponentPolicy] = None,
         reward_config: RewardConfig = RewardConfig(),
-        max_moves: int = 128,
+        max_moves: int = 512,
     ) -> None:
         super().__init__()
         self.agent_color = agent_color
@@ -99,19 +104,33 @@ class ChessEnv(gym.Env):
                 info,
             )
 
+        board_before = self.board.copy(stack=False)
         self.board.push(move)
         self._ply_count += 1
+        board_after_agent = self.board.copy(stack=False)
 
-        terminated, reward = self._terminal_reward()
-        if terminated:
+        result = self._current_result()
+        if result is not None:
+            reward = self._compute_reward(
+                board_before,
+                board_after_agent,
+                self.agent_color,
+                result,
+            )
             observation = self._get_obs()
             info["legal_moves_mask"] = self._legal_moves_mask()
             return observation, reward, True, False, info
 
         self._opponent_move()
-        terminated, reward = self._terminal_reward()
-
+        result = self._current_result()
+        terminated = result is not None
         truncated = self._ply_count >= self.max_moves
+        reward = self._compute_reward(
+            board_before,
+            board_after_agent,
+            self.agent_color,
+            result if terminated else None,
+        )
         observation = self._get_obs()
         info["legal_moves_mask"] = self._legal_moves_mask()
         return observation, reward, terminated, truncated, info
@@ -137,25 +156,45 @@ class ChessEnv(gym.Env):
         self.board.push(move)
         self._ply_count += 1
 
-    def _terminal_reward(self) -> Tuple[bool, float]:
+    def _current_result(self) -> Optional[str]:
         if not self.board.is_game_over():
-            return False, 0.0
-        result = self.board.result(claim_draw=True)
+            return None
+        return self.board.result(claim_draw=True)
+
+    def _result_reward(self, result: Optional[str]) -> float:
+        if result is None:
+            return 0.0
         if result == "1-0":
-            reward = (
+            return (
                 self.reward_config.win
                 if self.agent_color == chess.WHITE
                 else self.reward_config.loss
             )
-            return True, reward
         if result == "0-1":
-            reward = (
+            return (
                 self.reward_config.win
                 if self.agent_color == chess.BLACK
                 else self.reward_config.loss
             )
-            return True, reward
-        return True, self.reward_config.draw
+        return self.reward_config.draw
+
+    def _compute_reward(
+        self,
+        board_before: chess.Board,
+        board_after_agent: chess.Board,
+        agent_color: chess.Color,
+        result: Optional[str],
+    ) -> float:
+        if result is not None:
+            return self._result_reward(result)
+        if self.reward_config.reward_fn is None:
+            return 0.0
+        return self.reward_config.reward_fn(
+            board_before,
+            board_after_agent,
+            agent_color,
+            result,
+        )
 
     def _legal_moves_mask(self) -> np.ndarray:
         mask = np.zeros(self.action_space.n, dtype=np.float32)

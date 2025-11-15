@@ -8,14 +8,20 @@ import argparse
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
+import chess
 import numpy as np
 import torch
 from torch.distributions import Categorical
 import torch.nn.functional as F
 
-from rl_chess import ChessEnv
+from rl_chess import (
+    ChessEnv,
+    RewardConfig,
+    evaluation_delta_reward,
+    shutdown_engine,
+)
 from rl_chess.models import PolicyValueNet, make_optimizer
 
 
@@ -34,6 +40,7 @@ class PPOConfig:
     max_grad_norm: float = 1.0
     checkpoint_dir: Path = Path("checkpoints")
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    agent_color_schedule: str = "random"
     hf_save_dir: Optional[Path] = None
     hf_repo_id: Optional[str] = None
     hf_push_to_hub: bool = False
@@ -187,6 +194,13 @@ def parse_args() -> PPOConfig:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument(
+        "--agent-color-schedule",
+        type=str,
+        default="white",
+        choices=("white", "black", "alternate", "random"),
+        help="Color curriculum for the agent during training.",
+    )
+    parser.add_argument(
         "--hf-save-dir",
         type=str,
         default=None,
@@ -230,6 +244,7 @@ def parse_args() -> PPOConfig:
         learning_rate=args.lr,
         device=args.device or ("cuda" if torch.cuda.is_available() else "cpu"),
         checkpoint_dir=Path(args.checkpoint_dir),
+        agent_color_schedule=args.agent_color_schedule,
         hf_save_dir=Path(args.hf_save_dir).expanduser()
         if args.hf_save_dir
         else None,
@@ -242,9 +257,24 @@ def parse_args() -> PPOConfig:
     return cfg
 
 
+def select_agent_color(schedule: str, rollout_idx: int) -> chess.Color:
+    if schedule == "white":
+        return chess.WHITE
+    if schedule == "black":
+        return chess.BLACK
+    if schedule == "alternate":
+        return chess.WHITE if rollout_idx % 2 == 0 else chess.BLACK
+    if schedule == "random":
+        return chess.WHITE if np.random.rand() < 0.5 else chess.BLACK
+    raise ValueError(f"Unknown agent_color_schedule: {schedule}")
+
+
 def main():
     cfg = parse_args()
-    env = ChessEnv()
+    rollout_idx = 0
+    initial_color = select_agent_color(cfg.agent_color_schedule, rollout_idx)
+    reward_cfg = RewardConfig(reward_fn=evaluation_delta_reward)
+    env = ChessEnv(agent_color=initial_color, reward_config=reward_cfg)
     policy = PolicyValueNet().to(cfg.device)
     optimizer = make_optimizer(policy, lr=cfg.learning_rate)
 
@@ -252,23 +282,29 @@ def main():
     buffer = RolloutBuffer()
     start_time = time.time()
 
-    while total_steps < cfg.total_steps:
-        collect_rollout(env, policy, buffer, cfg.rollout_length, cfg.device)
-        total_steps += cfg.rollout_length
-        ppo_update(policy, optimizer, buffer, cfg)
-        buffer.clear()
+    try:
+        while total_steps < cfg.total_steps:
+            desired_color = select_agent_color(cfg.agent_color_schedule, rollout_idx)
+            if env.agent_color != desired_color:
+                env.agent_color = desired_color
+            collect_rollout(env, policy, buffer, cfg.rollout_length, cfg.device)
+            total_steps += cfg.rollout_length
+            ppo_update(policy, optimizer, buffer, cfg)
+            buffer.clear()
+            rollout_idx += 1
 
-        if total_steps % (cfg.rollout_length * 10) == 0:
-            save_checkpoint(policy, total_steps, cfg)
-            elapsed = time.time() - start_time
-            print(f"[info] steps={total_steps} elapsed={elapsed:.1f}s")
+            if total_steps % (cfg.rollout_length * 10) == 0:
+                save_checkpoint(policy, total_steps, cfg)
+                elapsed = time.time() - start_time
+                print(f"[info] steps={total_steps} elapsed={elapsed:.1f}s")
 
-    save_checkpoint(policy, total_steps, cfg)
-    if cfg.hf_save_dir or cfg.hf_push_to_hub:
-        maybe_export_to_hub(policy, cfg, step_label=f"step-{total_steps}")
-    print("Training complete.")
+        save_checkpoint(policy, total_steps, cfg)
+        if cfg.hf_save_dir or cfg.hf_push_to_hub:
+            maybe_export_to_hub(policy, cfg, step_label=f"step-{total_steps}")
+        print("Training complete.")
+    finally:
+        shutdown_engine()
 
 
 if __name__ == "__main__":
     main()
-
