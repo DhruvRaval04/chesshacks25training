@@ -45,13 +45,17 @@ class ChessEnv(gym.Env):
 
     def __init__(
         self,
-        agent_color: chess.Color = chess.WHITE,
+        agent_color: Optional[chess.Color] = None,
         opponent_policy: Optional[OpponentPolicy] = None,
         reward_config: RewardConfig = RewardConfig(),
-        max_moves: int = 512,
+        max_moves: int = 128,
     ) -> None:
         super().__init__()
-        self.agent_color = agent_color
+        self._randomize_agent_color = agent_color is None
+        if agent_color is None:
+            self.agent_color = self._sample_random_color()
+        else:
+            self.agent_color = agent_color
         self.opponent_policy = (
             opponent_policy or opponents.greedy_material_policy
         )
@@ -79,6 +83,8 @@ class ChessEnv(gym.Env):
         super().reset(seed=seed)
         self.board.reset()
         self._ply_count = 0
+        if self._randomize_agent_color:
+            self.agent_color = self._sample_random_color()
         if self.agent_color == chess.BLACK:
             # Opponent starts
             self._opponent_move()
@@ -201,6 +207,9 @@ class ChessEnv(gym.Env):
         for move in self.board.legal_moves:
             mask[move_to_index(move)] = 1.0
         return mask
+
+    def _sample_random_color(self) -> chess.Color:
+        return chess.WHITE if np.random.rand() < 0.5 else chess.BLACK
 
     def _get_obs(self) -> np.ndarray:
         planes = []

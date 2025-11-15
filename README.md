@@ -50,20 +50,65 @@ During training:
 - `ppo_update` computes GAE advantages, applies clipping, and performs multiple epochs of SGD per batch.
 - Checkpoints land in `checkpoints/policy_step_*.pt`. Load them back with `PolicyValueNet.load_state_dict`.
 
-## 4. Experiment Tips
+## 4. Training on Modal
+
+Need more horsepower? The repository now ships with `modal_train.py`, which
+spins up a GPU worker (A10G by default) and runs `train.py` remotely.
+
+1. Install the Modal CLI & authenticate:
+   ```bash
+   pip install modal
+   modal token new
+   ```
+2. Create a persistent volume for checkpoints/metrics (once per account):
+   ```bash
+   modal volume create chesshacks25-artifacts
+   ```
+3. Launch training:
+   ```bash
+   modal run modal_train.py::train_remote \
+     --total-steps 200000 \
+     --checkpoint-subdir modal-run-01 \
+     --metrics-filename modal-run-01.csv
+   ```
+
+Key flags exposed by `train_remote` mirror the CLI version (`total-steps`,
+`rollout-length`, `mini-batch-size`, etc.) plus a few Modal-specific helpers:
+
+- `checkpoint-subdir`: directory inside the Modal volume where checkpoints land
+- `metrics-filename`: CSV file inside the volume for logged stats
+- `hf-save-subdir`: optional Hugging Face `save_pretrained` export location
+- `hf-token-env-var`: name of an environment variable (e.g. from a Modal Secret)
+  that stores an API token so remote pushes stay private
+
+Artifacts live in the `chesshacks25-artifacts` volume. Pull them back anytime:
+
+```bash
+modal volume get chesshacks25-artifacts checkpoints/policy_step_50000.pt .
+modal volume get chesshacks25-artifacts modal-run-01.csv ./metrics/
+```
+
+Switch the GPU type, timeout, or volume mount by editing `modal_train.py` if you
+need a different setup.
+
+## 5. Experiment Tips
 
 - **Curriculum** – Reduce `max_moves` or restrict legal moves early on to stabilize learning.
 - **Reward shaping** – Incorporate material balance, center control, or check bonuses for denser feedback.
 - **Evaluation** – Write a small script that plays the current model against baseline heuristics to gauge improvement.
-- **Logging** – Integrate TensorBoard or Weights & Biases by recording episode returns, entropy, and value loss inside the main loop.
+- **Logging** – `train.py` now appends per-update stats (reward mean/std, losses, entropy, KL) to `metrics.csv`. Plot them any time via:
+  ```bash
+  python plot_metrics.py --metrics-path metrics.csv --output metrics.png
+  ```
+  Combine this with TensorBoard or Weights & Biases if you want richer dashboards.
 
-## 5. Next Steps
+## 6. Next Steps
 
 - Implement self-play by alternating colors and sharing the network weights.
 - Add dataset bootstrapping: pretrain policy head using PG from master games to shorten exploration.
 - Deploy the trained agent by wrapping `ChessEnv` inside a web or CLI interface that feeds UCI moves.
 
-## 6. Publishing Checkpoints to Hugging Face
+## 7. Publishing Checkpoints to Hugging Face
 
 `PolicyValueNet` mixes in Hugging Face’s `PyTorchModelHubMixin`, so you can call the standard `save_pretrained` / `push_to_hub` helpers exactly like the Transformers examples. Make sure you have `huggingface-hub` installed (`pip install huggingface-hub`) and authenticate once via `hf auth login` (stores a token that both `train.py` and `hg.py` can reuse).
 

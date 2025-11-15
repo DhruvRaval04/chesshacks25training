@@ -8,6 +8,9 @@ import chess.engine
 DEFAULT_STOCKFISH_PATHS = [
     os.environ.get("STOCKFISH_PATH"),
     "/opt/homebrew/Cellar/stockfish/17.1/bin/stockfish",
+    "/usr/bin/stockfish",
+    "/usr/local/bin/stockfish",
+    "/usr/games/stockfish",
 ]
 DEFAULT_ANALYSIS_DEPTH = 12
 MATE_SCORE = 30_000
