@@ -13,7 +13,9 @@ DEFAULT_STOCKFISH_PATHS = [
     "/usr/games/stockfish",
 ]
 DEFAULT_ANALYSIS_DEPTH = 12
-MATE_SCORE = 30_000
+MATE_SCORE = 1000
+POSITIVE_EVAL_MULTIPLIER = 1.5
+EVAL_CLAMP = 10.0
 
 _ENGINE: Optional[chess.engine.SimpleEngine] = None
 
@@ -64,7 +66,7 @@ def get_chess_evaluation(fen_string: str, depth: int = DEFAULT_ANALYSIS_DEPTH):
 
     Returns:
         float: Evaluation in pawns from White's POV (negative favors Black),
-               clipped to [-30, 30].
+               clipped to [-10, 10].
     """
     board = chess.Board(fen_string)
     engine = _get_engine()
@@ -82,7 +84,10 @@ def get_chess_evaluation(fen_string: str, depth: int = DEFAULT_ANALYSIS_DEPTH):
     if score is None:
         return 0.0
     pawns = score / 100.0  # convert centipawns
-    return max(-30.0, min(30.0, pawns))
+    if pawns > 0:
+        pawns *= POSITIVE_EVAL_MULTIPLIER
+    pawns = max(-EVAL_CLAMP, min(EVAL_CLAMP, pawns))
+    return pawns
 
 
 def evaluation_delta_reward(
