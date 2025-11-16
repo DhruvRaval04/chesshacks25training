@@ -58,7 +58,7 @@ class ChessEnv(gym.Env):
         else:
             self.agent_color = agent_color
         self.opponent_policy = (
-            opponent_policy or opponents.random_policy
+            opponent_policy or opponents.create_stockfish_policy(skill_level=10, depth=12)
         )
         self.reward_config = reward_config
         self.max_moves = max_moves
