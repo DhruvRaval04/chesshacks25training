@@ -26,6 +26,9 @@ from rl_chess import (
 from rl_chess.models import PolicyValueNet, make_optimizer
 
 
+ENTROPY_COEF = 0.02
+
+
 @dataclass
 class PPOConfig:
     total_steps: int = 10_000
@@ -36,7 +39,7 @@ class PPOConfig:
     gae_lambda: float = 0.95
     clip_coef: float = 0.2
     value_coef: float = 0.5
-    entropy_coef: float = 0.01
+    entropy_coef: float = ENTROPY_COEF
     learning_rate: float = 3e-4
     max_grad_norm: float = 1.0
     checkpoint_dir: Path = Path("checkpoints")

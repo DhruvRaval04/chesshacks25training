@@ -5,7 +5,7 @@ Gym-compatible chess environment built on top of python-chess.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import chess
 import numpy as np
@@ -33,10 +33,11 @@ OpponentPolicy = Callable[[chess.Board], chess.Move]
 
 @dataclass
 class RewardConfig:
-    win: float = 1.0
-    loss: float = -1.0
+    win: float = 20.0
+    loss: float = -20.0
     draw: float = 0.0
-    illegal_move: float = -1.0
+    illegal_move: float = -20.0
+    repetition_penalty: float = -20.0
     reward_fn: Optional[RewardFn] = evaluation_delta_reward
 
 
@@ -57,7 +58,7 @@ class ChessEnv(gym.Env):
         else:
             self.agent_color = agent_color
         self.opponent_policy = (
-            opponent_policy or opponents.greedy_material_policy
+            opponent_policy or opponents.random_policy
         )
         self.reward_config = reward_config
         self.max_moves = max_moves
@@ -114,6 +115,12 @@ class ChessEnv(gym.Env):
         self.board.push(move)
         self._ply_count += 1
         board_after_agent = self.board.copy(stack=False)
+        penalty, penalty_reasons = self._repetition_penalty(board_after_agent)
+        if penalty_reasons:
+            info["repetition_penalty"] = {
+                "amount": penalty,
+                "reasons": penalty_reasons,
+            }
 
         result = self._current_result()
         if result is not None:
@@ -123,6 +130,7 @@ class ChessEnv(gym.Env):
                 self.agent_color,
                 result,
             )
+            reward += penalty
             observation = self._get_obs()
             info["legal_moves_mask"] = self._legal_moves_mask()
             return observation, reward, True, False, info
@@ -137,6 +145,7 @@ class ChessEnv(gym.Env):
             self.agent_color,
             result if terminated else None,
         )
+        reward += penalty
         observation = self._get_obs()
         info["legal_moves_mask"] = self._legal_moves_mask()
         return observation, reward, terminated, truncated, info
@@ -191,22 +200,36 @@ class ChessEnv(gym.Env):
         agent_color: chess.Color,
         result: Optional[str],
     ) -> float:
-        if result is not None:
-            return self._result_reward(result)
-        if self.reward_config.reward_fn is None:
-            return 0.0
-        return self.reward_config.reward_fn(
-            board_before,
-            board_after_agent,
-            agent_color,
-            result,
-        )
+        dense_reward = 0.0
+        if self.reward_config.reward_fn is not None:
+            dense_reward = self.reward_config.reward_fn(
+                board_before,
+                board_after_agent,
+                agent_color,
+                result,
+            )
+        terminal_bonus = self._result_reward(result)
+        return dense_reward + terminal_bonus
 
     def _legal_moves_mask(self) -> np.ndarray:
         mask = np.zeros(self.action_space.n, dtype=np.float32)
         for move in self.board.legal_moves:
             mask[move_to_index(move)] = 1.0
         return mask
+
+    def _repetition_penalty(
+        self, board_after_agent: chess.Board
+    ) -> Tuple[float, List[str]]:
+        reasons: List[str] = []
+        if self.reward_config.repetition_penalty == 0.0:
+            return 0.0, reasons
+        if board_after_agent.can_claim_threefold_repetition():
+            reasons.append("threefold_repetition")
+        if board_after_agent.can_claim_fifty_moves():
+            reasons.append("fifty_moves")
+        if not reasons:
+            return 0.0, reasons
+        return self.reward_config.repetition_penalty, reasons
 
     def _sample_random_color(self) -> chess.Color:
         return chess.WHITE if np.random.rand() < 0.5 else chess.BLACK
